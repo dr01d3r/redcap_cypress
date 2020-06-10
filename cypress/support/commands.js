@@ -9,6 +9,9 @@ import './projects/commands'
 // They are very stable and do not change often, if ever
 
 Cypress.Commands.add('login', (options) => {
+
+    cy.clearCookies()
+
     cy.request({
         method: 'POST',
         url: '/', // baseUrl is prepended to url
@@ -43,6 +46,25 @@ Cypress.Commands.add('visit_base', (options) => {
     })
 })
 
+Cypress.Commands.add('base_db_seed', () => {
+    cy.mysql_db('structure').then(() => {
+
+        console.log(window.base_url)
+
+        //Seeds the database
+        cy.mysql_db('/versions/' + Cypress.env('redcap_version'), window.base_url).then(() => {
+
+            if(Cypress.env('redcap_hooks_path') !== undefined){
+                const redcap_hooks_path = "REDCAP_HOOKS_PATH/" + Cypress.env('redcap_hooks_path').replace(/\//g, "\\\\/");
+                cy.mysql_db('hooks_config', redcap_hooks_path) //Fetch the hooks SQL seed data
+            }
+
+            //Clear out all cookies
+            cy.clearCookies()
+        })
+    })
+})
+
 Cypress.Commands.add('maintain_login', () => {
     let user = window.user_info.get_current_user()
     let pass = window.user_info.get_current_pass()
@@ -50,7 +72,11 @@ Cypress.Commands.add('maintain_login', () => {
     let user_type = window.user_info.get_user_type()
     let previous_user_type = window.user_info.get_previous_user_type()
 
-    if(user_type === previous_user_type){        
+    console.log('User Type Change to ' + user_type + '.')
+    console.log('previous: ' + previous_user_type)
+    console.log('current: ' + user_type)
+
+    if(user_type === previous_user_type){
         cy.getCookies()
           .should((cookies) => {
 
@@ -73,9 +99,6 @@ Cypress.Commands.add('maintain_login', () => {
 
     //If user type has changed, let's clear cookies and login again
     } else {
-        console.log('User Type Change')
-
-        cy.clearCookies()
         cy.login({ username: user, password:  pass })
     }
 
@@ -186,13 +209,47 @@ Cypress.Commands.add('compare_value_by_field_label', (name, value, timeout = 100
     })
 })
 
-Cypress.Commands.add('select_field_by_label', (name, timeout = 10000) => {
-    cy.contains('td', name, { timeout: timeout }).parent().parentsUntil('tr').last().parent().then(($tr) => {
-        const name = $tr[0]['attributes']['sq_id']['value']
-        cy.get('[name="' + name + '"]', { force: true }).then(($a) => {
+Cypress.Commands.add('set_field_value_by_label', ($name, $value, $type, $prefix = '', $suffix = '', $last_suffix = '', timeout = 10000) => {   
+   cy.contains('td', $name, { timeout: timeout }).
+      parent().
+      parentsUntil('tr').
+      last().
+      parent().
+      then(($tr) => {
+
+        let selector = $type + '[name="' + $prefix + $tr[0]['attributes']['sq_id']['value'] + $suffix + '"]'
+        cy.get(selector, { force: true}).then(($a) => {
             return $a[0]
-        })
-    })
+        })        
+      })
+})
+
+Cypress.Commands.add('select_text_by_label', ($name, $value) => {   
+    cy.set_field_value_by_label($name, $value, 'input')
+})
+
+Cypress.Commands.add('select_textarea_by_label', ($name, $value) => {   
+    cy.set_field_value_by_label($name, $value, 'textarea')
+})
+
+Cypress.Commands.add('select_radio_by_label', ($name, $value) => {   
+    cy.set_field_value_by_label($name, $value, 'input', '', '___radio')
+})
+
+Cypress.Commands.add('select_value_by_label', ($name, $value) => {   
+    cy.set_field_value_by_label($name, $value, 'select', '', '')
+})
+
+Cypress.Commands.add('select_checkbox_by_label', ($name, $value) => {
+    cy.set_field_value_by_label($name, $value, 'input', '__chkn__', '')
+})
+
+Cypress.Commands.add('edit_field_by_label', (name, timeout = 10000) => {
+    cy.find_online_designer_field(name).parent().parentsUntil('tr').find('img[title=Edit]').parent().click()
+})
+
+Cypress.Commands.add('select_field_choices', (timeout = 10000) => {
+    cy.get('form#addFieldForm').children().get('span').contains('Choices').parent().parent().find('textarea')
 })
 
 Cypress.Commands.add('initial_save_field', () => {
@@ -241,58 +298,6 @@ Cypress.Commands.add('require_redcap_stats', () => {
     cy.server()
     cy.route({method: 'POST', url: '**/ProjectGeneral/project_stats_ajax.php'}).as('project_stats_ajax')
     cy.wait('@project_stats_ajax').then((xhr, error) => { })
-})
-
-function abstractSort(col_name, element, values, klass = 0){
-    const sortCompare1 = sorterCompare(col_name, element, values[0], klass)
-    const sortCompare2 = sorterCompare(col_name, element, values[1], klass)
-    sortCompare1.then(() => { sortCompare2 })
-}
-
-function sorterCompare(col_name, element, values, klass){
-    return cy.get('table#table-proj_table tr span').should('not.contain', "Loading").then(() => {
-        cy.get('th div').contains(col_name).click().then(()=>{
-            cy.get(element).then(($e) => {
-                cy.get('table#table-proj_table tr span').should('not.contain', "Loading").then(() => {
-                    klass ? expect($e).to.have.class(values) : expect($e).to.contain(values)       
-                })                                
-            })
-        })
-    })
-}
-
-Cypress.Commands.add('check_column_sort_values', (col_name, element, values) => {
-    abstractSort(col_name, element, values)
-})
-
-Cypress.Commands.add('check_column_sort_classes', (col_name, values) => {
-    abstractSort(col_name, 'table#table-proj_table tr:first span', values, 1)
-})
-
-function abstractProjectView(input, project_name, total_projects, dropdown_click){
-    cy.get('input#user_search').clear()
-
-    cy.get('input#user_search').type(input).then(() => {   
-
-        let $t = dropdown_click ? cy.get('button#user_search_btn') : cy.get('ul#ui-id-1 li a')
-
-        $t.click().then(($a) => {
-            cy.get('table#table-proj_table tr span').should('not.contain', "Loading").then(() => {
-                 cy.get('table#table-proj_table tr:first div.projtitle').then(($a) => {
-                    expect($a).to.contain(project_name)
-                    cy.get('table#table-proj_table').find('tr:visible').should('have.length', total_projects)
-                })
-            })
-        })
-    })
-}
-
-Cypress.Commands.add('visible_projects_user_input_click_view', (input, project_name, total_projects) => {
-    abstractProjectView(input, project_name, total_projects, true)
-})
-
-Cypress.Commands.add('visible_projects_user_input', (input, project_name, total_projects) => {
-    abstractProjectView(input, project_name, total_projects, false)
 })
 
 Cypress.Commands.add('get_project_table_row_col', (row = '1', col = '0') => {
@@ -400,6 +405,47 @@ Cypress.Commands.add('add_api_user_to_project', (username, pid) => {
             })
         })
     })
+})
+
+Cypress.Commands.add('num_projects_excluding_archived', () => {
+
+    const mysql = Cypress.env("mysql")
+    const query = "SELECT count(*) FROM redcap_projects WHERE status != 3;";
+
+    let cmd = ''
+
+    window.num_projects = null;
+
+    //If we are on Windows, we have to run a bash script instead
+    if( window.navigator['platform'].match(/Win/g) ) {
+
+        console.log('Windows platform detected')
+
+        cmd = mysql['path'] +
+            " -h" + mysql['host'] +
+            " --port=" + mysql['port'] +
+            " " + mysql['db_name'] +
+            " -u" + mysql['db_user'] +
+            " -p" + mysql['db_pass'] +
+            " -e '" + query + "' -N -s"
+
+    } else {
+
+        console.log('Unix-style platform enabled')
+
+        cmd = mysql['path'] +
+            " -h" + mysql['host'] +
+            " --port=" + mysql['port'] +
+            " " + mysql['db_name'] +
+            " -u" + mysql['db_user'] +
+            " -p" + mysql['db_pass'] +
+            " -e '" + query + "' -N -s"
+    }
+
+    cy.exec(cmd, { timeout: 100000}).then((response) => {
+        window.num_projects = response['stdout']
+    })
+
 })
 
 //
